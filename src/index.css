@@ -1,0 +1,35 @@
+:root {
+    --canvas: #211B1A;
+    --surface: #382A28;
+    --elevated: #60433D;
+    --muted: #916B60;
+    --accent: #C1A094;
+    --text: #E8D8CE;
+    --radius: 12px;
+    --font: "Inter", "Satoshi", system-ui, -apple-system, sans-serif;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: var(--canvas);
+    color: var(--text);
+    font-family: var(--font);
+    -webkit-font-smoothing: antialiased;
+}
+
+button {
+    font-family: inherit;
+    cursor: pointer;
+    border: none;
+    border-radius: 8px;
+    transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
