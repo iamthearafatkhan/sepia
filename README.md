@@ -67,4 +67,4 @@ The final .exe will be located at src-tauri/target/release/sepia.exe.
 ## 📄 License
 This project is licensed under the MIT License. See the LICENSE file for details.
 
-<div align="center"> <i>Built with ❤️ by <a href="https://github.com/iamthearafatkhan">Arafat Khan</a></i> </div> ```
+<div align="center"> <i>Built with ❤️ by <a href="https://github.com/iamthearafatkhan">Arafat Khan</a></i> </div>
