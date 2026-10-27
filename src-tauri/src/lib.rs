@@ -8,6 +8,8 @@ pub fn run() {
             commands::list_programs,
             commands::uninstall_program,
             commands::open_url,
+            commands::scan_junk,    // <-- ADDED
+            commands::clean_junk,   // <-- ADDED
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sepia");

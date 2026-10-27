@@ -311,3 +311,109 @@ fn launch_interactive_uninstaller(uninstall_string: &str) -> Result<String, Stri
     Command::new(program).args(&args).spawn().map_err(|e| format!("Failed to launch uninstaller: {e}"))?;
     Ok("Interactive uninstaller launched.".into())
 }
+
+
+// --- SMART JUNK SCANNER ---
+#[derive(serde::Serialize)]
+pub struct JunkCategory {
+    pub id: String,
+    pub name: String,
+    pub size_mb: f64,
+    pub path: String,
+}
+
+#[tauri::command]
+pub fn scan_junk() -> Vec<JunkCategory> {
+    let mut categories = Vec::new();
+    
+    // 1. User Temp Folder
+    let user_temp = std::env::temp_dir();
+    let temp_size = get_dir_size(&user_temp.to_string_lossy());
+    categories.push(JunkCategory {
+        id: "user_temp".into(),
+        name: "User Temp Files".into(),
+        size_mb: temp_size,
+        path: user_temp.to_string_lossy().to_string(),
+    });
+
+    // 2. Windows Temp Folder
+    let win_temp = std::path::Path::new("C:\\Windows\\Temp");
+    if win_temp.exists() {
+        let win_temp_size = get_dir_size("C:\\Windows\\Temp");
+        categories.push(JunkCategory {
+            id: "win_temp".into(),
+            name: "Windows Temp Files".into(),
+            size_mb: win_temp_size,
+            path: "C:\\Windows\\Temp".into(),
+        });
+    }
+
+    // 3. NPM Cache
+    let mut npm_cache_size = 0.0;
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        let npm_cache = std::path::Path::new(&local_app_data).join("npm-cache");
+        if npm_cache.exists() {
+            npm_cache_size = get_dir_size(&npm_cache.to_string_lossy());
+        }
+    }
+    categories.push(JunkCategory {
+        id: "npm_cache".into(),
+        name: "NPM Cache".into(),
+        size_mb: npm_cache_size,
+        path: "npm-cache".into(),
+    });
+
+    // 4. Pip Cache
+    let mut pip_cache_size = 0.0;
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        let pip_cache = std::path::Path::new(&local_app_data).join("pip\\cache");
+        if pip_cache.exists() {
+            pip_cache_size = get_dir_size(&pip_cache.to_string_lossy());
+        }
+    }
+    categories.push(JunkCategory {
+        id: "pip_cache".into(),
+        name: "Pip Cache".into(),
+        size_mb: pip_cache_size,
+        path: "pip-cache".into(),
+    });
+
+    categories
+}
+
+#[tauri::command]
+pub fn clean_junk(id: String) -> Result<String, String> {
+    let mut deleted_count = 0;
+
+    let target_path = match id.as_str() {
+        "user_temp" => Some(std::env::temp_dir().to_string_lossy().to_string()),
+        "win_temp" => Some("C:\\Windows\\Temp".to_string()),
+        "npm_cache" => {
+            let _ = Command::new("cmd").args(["/C", "npm", "cache", "clean", "--force"]).output();
+            return Ok("NPM Cache cleaned.".into());
+        }
+        "pip_cache" => {
+            let _ = Command::new("cmd").args(["/C", "pip", "cache", "purge"]).output();
+            return Ok("Pip Cache cleaned.".into());
+        }
+        _ => None,
+    };
+
+    if let Some(path) = target_path {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    // Try to remove the directory. If it fails (in use), ignore it.
+                    if std::fs::remove_dir_all(&p).is_ok() { deleted_count += 1; }
+                } else {
+                    // Try to remove the file. If it fails (in use), ignore it.
+                    if std::fs::remove_file(&p).is_ok() { deleted_count += 1; }
+                }
+            }
+        }
+        return Ok(format!("Cleaned {} items.", deleted_count));
+    }
+
+    Err("Unknown junk category".into())
+}
