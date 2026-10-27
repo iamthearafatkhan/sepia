@@ -26,3 +26,23 @@ src-tauri/Cargo.lock
 *.njsproj
 *.sln
 *.sw?
+
+# Dependencies
+node_modules/
+
+# Builds
+dist/
+src-tauri/target/
+
+# Environment and logs
+.env
+*.log
+npm-debug.log*
+
+# Tauri generated files
+src-tauri/Cargo.lock
+
+# Editor settings
+.vscode/
+.idea/
+.DS_Store

@@ -21,6 +21,9 @@ export default function App() {
     const [message, setMessage] = useState<string | null>(null);
     const [searchQuery, setSearchQuery] = useState("");
 
+    // State for the custom modal
+    const [confirmTarget, setConfirmTarget] = useState<InstalledProgram | null>(null);
+
     async function refresh() {
         setLoading(true);
         try {
@@ -37,13 +40,29 @@ export default function App() {
         refresh();
     }, []);
 
-    async function handleUninstall(program: InstalledProgram) {
-        if (!window.confirm(`Uninstall "${program.name}"?`)) return;
-        setBusyName(program.name);
+    // 1. User clicks "Uninstall" -> open our custom modal
+    function requestUninstall(program: InstalledProgram) {
+        setConfirmTarget(program);
+    }
+
+    // 2. User clicks "Confirm" inside the modal -> do the uninstall
+    async function executeUninstall() {
+        if (!confirmTarget) return;
+
+        const target = confirmTarget;
+        setConfirmTarget(null); // Close modal
+        setBusyName(target.name);
+        setMessage(null);
+
         try {
-            const result = await invoke<string>("uninstall_program", { program });
+            const result = await invoke<string>("uninstall_program", { program: target });
             setMessage(result);
-            await refresh();
+
+            // INSTANT UPDATE: Remove it from the UI without rescanning the whole PC!
+            setPrograms((prev) => prev.filter(
+                (p) => !(p.name === target.name && p.source === target.source)
+            ));
+
         } catch (err) {
             setMessage(`Uninstall failed: ${err}`);
         } finally {
@@ -111,7 +130,7 @@ export default function App() {
                             <ProgramRow
                                 key={`${program.source}-${program.name}-${program.version}`}
                                 program={program}
-                                onUninstall={handleUninstall}
+                                onUninstall={requestUninstall}
                                 busy={busyName === program.name}
                             />
                         ))}
@@ -126,30 +145,75 @@ export default function App() {
 
             {/* Footer */}
             <footer style={{
-                marginTop: "3rem",
-                paddingTop: "1.25rem",
-                borderTop: "1px solid rgba(145, 107, 96, 0.2)",
-                color: "var(--muted)",
-                fontSize: "0.75rem",
-                fontWeight: 500,
-                textAlign: "center"
+                marginTop: "3rem", paddingTop: "1.25rem", borderTop: "1px solid rgba(145, 107, 96, 0.2)", color: "var(--muted)", fontSize: "0.75rem", fontWeight: 500, textAlign: "center"
             }}>
                 Built by{" "}
                 <span
                     onClick={() => invoke("open_url", { url: "https://github.com/iamthearafatkhan" })}
-                    style={{
-                        color: "var(--accent)",
-                        textDecoration: "none",
-                        fontWeight: 600,
-                        cursor: "pointer", // Makes it look like a link
-                        transition: "color 0.2s ease"
-                    }}
+                    style={{ color: "var(--accent)", textDecoration: "none", fontWeight: 600, cursor: "pointer", transition: "color 0.2s ease" }}
                     onMouseEnter={(e) => e.currentTarget.style.color = "var(--text)"}
                     onMouseLeave={(e) => e.currentTarget.style.color = "var(--accent)"}
                 >
                     Arafat Khan
                 </span>
             </footer>
+
+            {/* --- PREMIUM CUSTOM MODAL --- */}
+            {confirmTarget && (
+                <div style={{
+                    position: "fixed", inset: 0,
+                    backgroundColor: "rgba(33, 27, 26, 0.85)", // Sepia canvas color with opacity
+                    backdropFilter: "blur(4px)", // Premium blur effect
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    zIndex: 1000,
+                    animation: "fadeIn 0.2s ease-out"
+                }}>
+                    <div style={{
+                        background: "var(--surface)",
+                        padding: "2rem",
+                        borderRadius: "16px",
+                        width: "100%", maxWidth: "420px",
+                        border: "1px solid var(--elevated)",
+                        boxShadow: "0 20px 40px rgba(0,0,0,0.4)",
+                        textAlign: "center"
+                    }}>
+                        <h2 style={{ margin: "0 0 0.5rem 0", color: "var(--text)", fontSize: "1.25rem" }}>
+                            Uninstall Software?
+                        </h2>
+                        <p style={{ color: "var(--muted)", fontSize: "0.9rem", marginBottom: "1.5rem", lineHeight: 1.5 }}>
+                            Are you sure you want to remove <strong style={{ color: "var(--text)" }}>{confirmTarget.name}</strong>? This action cannot be undone.
+                        </p>
+
+                        <div style={{ display: "flex", gap: "0.75rem", justifyContent: "center" }}>
+                            <button
+                                onClick={() => setConfirmTarget(null)}
+                                style={{
+                                    flex: 1, padding: "0.75rem", borderRadius: "8px",
+                                    background: "transparent", color: "var(--text)",
+                                    border: "1px solid rgba(193, 160, 148, 0.3)",
+                                    fontWeight: 500, transition: "background 0.2s"
+                                }}
+                                onMouseEnter={(e) => e.currentTarget.style.background = "rgba(193, 160, 148, 0.1)"}
+                                onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={executeUninstall}
+                                style={{
+                                    flex: 1, padding: "0.75rem", borderRadius: "8px",
+                                    background: "var(--accent)", color: "var(--canvas)",
+                                    border: "none", fontWeight: 600, transition: "opacity 0.2s"
+                                }}
+                                onMouseEnter={(e) => e.currentTarget.style.opacity = "0.9"}
+                                onMouseLeave={(e) => e.currentTarget.style.opacity = "1"}
+                            >
+                                Uninstall
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

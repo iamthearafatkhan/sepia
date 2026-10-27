@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use winreg::enums::*;
 use winreg::RegKey;
 use walkdir::WalkDir;
+use std::path::Path;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct InstalledProgram {
@@ -13,17 +14,19 @@ pub struct InstalledProgram {
     pub registry_view: String,
     pub icon_path: String,
     pub source: String,
-    pub size_mb: f64, // NEW
+    pub size_mb: f64,
 }
 
 pub fn scan_installed_programs() -> Vec<InstalledProgram> {
     let mut programs = Vec::new();
+
     scan_hive(HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", KEY_READ | KEY_WOW64_64KEY, "64-bit", &mut programs);
     scan_hive(HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", KEY_READ | KEY_WOW64_32KEY, "32-bit", &mut programs);
     scan_hive(HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", KEY_READ, "per-user", &mut programs);
 
     programs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     programs.dedup_by(|a, b| a.name == b.name && a.uninstall_string == b.uninstall_string);
+
     programs
 }
 
@@ -49,18 +52,44 @@ fn scan_hive(hive: winreg::HKEY, path: &str, flags: u32, view_label: &str, out: 
             if icon_path.contains(',') { icon_path = icon_path.split(',').next().unwrap_or("").to_string(); }
             icon_path = icon_path.replace("\"", "");
 
-            let install_location: String = subkey.get_value("InstallLocation").unwrap_or_default();
+            let mut install_location: String = subkey.get_value("InstallLocation").unwrap_or_default();
             
-            // Calculate folder size (only if path exists)
-            let mut size_mb = 0.0;
-            if !install_location.trim().is_empty() && std::path::Path::new(&install_location).exists() {
-                let mut total_size = 0;
-                for entry in WalkDir::new(&install_location).into_iter().filter_map(|e| e.ok()) {
-                    if let Ok(metadata) = entry.metadata() {
-                        if metadata.is_file() { total_size += metadata.len(); }
+            // --- SMART FALLBACK LOGIC ---
+            // If InstallLocation is empty, try to get the folder from the Icon or Uninstaller
+            if install_location.trim().is_empty() || !Path::new(&install_location).exists() {
+                
+                // 1. Try from Icon Path
+                if !icon_path.is_empty() {
+                    let p = Path::new(&icon_path);
+                    if let Some(parent) = p.parent() {
+                        install_location = parent.to_string_lossy().to_string();
                     }
                 }
-                size_mb = total_size as f64 / 1_048_576.0; // Convert to MB
+
+                // 2. If still empty, try from Uninstall String
+                if install_location.trim().is_empty() || !Path::new(&install_location).exists() {
+                    let clean_u = uninstall_string.trim_matches('"');
+                    let u_path = clean_u.split(' ').next().unwrap_or("");
+                    let p = Path::new(u_path);
+                    if let Some(parent) = p.parent() {
+                        install_location = parent.to_string_lossy().to_string();
+                    }
+                }
+            }
+
+            // Calculate size
+            let mut size_mb = 0.0;
+            if !install_location.trim().is_empty() && Path::new(&install_location).exists() {
+                // Check if it's a directory before walking
+                if Path::new(&install_location).is_dir() {
+                    let mut total_size = 0;
+                    for entry in WalkDir::new(&install_location).into_iter().filter_map(|e| e.ok()) {
+                        if let Ok(metadata) = entry.metadata() {
+                            if metadata.is_file() { total_size += metadata.len(); }
+                        }
+                    }
+                    size_mb = total_size as f64 / 1_048_576.0;
+                }
             }
 
             out.push(InstalledProgram {

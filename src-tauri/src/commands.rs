@@ -3,22 +3,36 @@ use std::process::Command;
 use serde_json::Value;
 use walkdir::WalkDir;
 use std::path::Path;
-use std::collections::HashMap;
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[tauri::command]
 pub async fn list_programs() -> Vec<InstalledProgram> {
     let mut programs = scan_installed_programs();
-    programs.extend(scan_pip_packages());
-    programs.extend(scan_npm_packages());
-    programs.extend(scan_choco_packages());
-    programs.extend(scan_scoop_packages());
+    
+    let (pip, npm, choco, scoop) = std::thread::spawn(|| {
+        (scan_pip_packages(), scan_npm_packages(), scan_choco_packages(), scan_scoop_packages())
+    }).join().unwrap_or_default();
+
+    programs.extend(pip);
+    programs.extend(npm);
+    programs.extend(choco);
+    programs.extend(scoop);
+    
     programs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     programs
 }
 
 #[tauri::command]
 pub fn open_url(url: String) {
-    let _ = Command::new("cmd").args(["/C", "start", "", &url]).spawn();
+    let mut cmd = Command::new("cmd");
+    cmd.args(["/C", "start", "", &url]);
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let _ = cmd.spawn();
 }
 
 fn get_dir_size(path: &str) -> f64 {
@@ -31,71 +45,98 @@ fn get_dir_size(path: &str) -> f64 {
     total_size as f64 / 1_048_576.0
 }
 
-// --- PIP SCANNER (FIXED) ---
-fn scan_pip_packages() -> Vec<InstalledProgram> {
-    let mut packages = Vec::new();
-    let mut locations = HashMap::new();
+fn run_silent_cmd(args: &[&str]) -> std::io::Result<std::process::Output> {
+    let mut cmd = Command::new("cmd");
+    cmd.args(["/C"]).args(args);
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd.output()
+}
 
-    // Force python -m pip to avoid PATH issues on Windows
-    let show_cmd = Command::new("cmd").args(["/C", "python", "-m", "pip", "show"]).output();
-    
-    if let Ok(out) = show_cmd {
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let mut current_name = String::new();
-        
-        for line in stdout.lines() {
-            // Aggressively trim to remove hidden \r characters
-            let trimmed = line.trim(); 
-            
-            if trimmed.starts_with("Name: ") {
-                current_name = trimmed.replacen("Name: ", "", 1).trim().to_string();
-            } else if trimmed.starts_with("Location: ") {
-                let loc = trimmed.replacen("Location: ", "", 1).trim().to_string();
-                if !current_name.is_empty() {
-                    locations.insert(current_name.clone(), loc);
-                    current_name.clear();
-                }
+// --- UNIFIED PYTHON FINDER ---
+fn find_python_executable() -> Option<String> {
+    // 1. Try standard commands
+    for exe in &["py", "python", "python3"] {
+        let mut cmd = Command::new(exe);
+        cmd.arg("--version");
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        if let Ok(out) = cmd.output() {
+            if out.status.success() {
+                return Some(exe.to_string());
             }
         }
     }
 
-    let list_cmd = Command::new("cmd").args(["/C", "python", "-m", "pip", "list", "--format=json"]).output();
-    
-    if let Ok(out) = list_cmd {
-        let json_str = String::from_utf8_lossy(&out.stdout);
-        if let Ok(Value::Array(arr)) = serde_json::from_str::<Value>(&json_str) {
-            for item in arr {
-                if let (Some(name), Some(version)) = (item["name"].as_str(), item["version"].as_str()) {
-                    let mut size_mb = 0.0;
-                    let mut path = String::new();
-                    
-                    if let Some(loc) = locations.get(name) {
-                        // Python package folders usually replace dashes with underscores
-                        let pkg_dir1 = format!("{}\\{}", loc, name.replace("-", "_"));
-                        let pkg_dir2 = format!("{}\\{}", loc, name);
-                        
-                        if Path::new(&pkg_dir1).exists() {
-                            path = pkg_dir1;
-                        } else if Path::new(&pkg_dir2).exists() {
-                            path = pkg_dir2;
-                        }
+    // 2. Try standard installation paths (AppData & Program Files)
+    let mut search_paths = Vec::new();
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        for ver in &["313", "312", "311", "310", "39"] {
+            search_paths.push(format!("{}\\Programs\\Python\\Python{}\\python.exe", local_app_data, ver));
+        }
+        search_paths.push(format!("{}\\Microsoft\\WindowsApps\\python.exe", local_app_data));
+    }
+    if let Ok(program_files) = std::env::var("ProgramFiles") {
+        for ver in &["313", "312", "311", "310", "39"] {
+            search_paths.push(format!("{}\\Python{}\\python.exe", program_files, ver));
+        }
+    }
 
-                        if !path.is_empty() {
-                            size_mb = get_dir_size(&path);
-                        }
+    for path in search_paths {
+        if Path::new(&path).exists() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+// --- PIP SCANNER ---
+fn scan_pip_packages() -> Vec<InstalledProgram> {
+    let mut packages = Vec::new();
+    let python_exe = match find_python_executable() {
+        Some(exe) => exe,
+        None => return packages, // Python not found, return empty list
+    };
+
+    let script = r#"
+import importlib.metadata, json
+res = []
+for dist in importlib.metadata.distributions():
+    try:
+        size = 0
+        for f in dist.files or []:
+            try:
+                p = f.locate()
+                if p and p.is_file(): size += p.stat().st_size
+            except: pass
+        res.append({"name": dist.metadata["Name"], "version": dist.version, "size": size})
+    except: pass
+print(json.dumps(res))
+"#;
+
+    let mut cmd = Command::new(&python_exe);
+    cmd.args(["-c", script]);
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    if let Ok(out) = cmd.output() {
+        if out.status.success() {
+            let json_str = String::from_utf8_lossy(&out.stdout);
+            if let Ok(Value::Array(arr)) = serde_json::from_str::<Value>(&json_str) {
+                for item in arr {
+                    if let (Some(name), Some(version), Some(size)) = (item["name"].as_str(), item["version"].as_str(), item["size"].as_f64()) {
+                        packages.push(InstalledProgram {
+                            name: name.to_string(),
+                            version: version.to_string(),
+                            publisher: "PyPI (Python)".into(),
+                            install_location: python_exe.clone(), // Save python path so we can uninstall later!
+                            uninstall_string: format!("{} -m pip uninstall -y {}", python_exe, name),
+                            registry_view: "pip".into(),
+                            icon_path: "".into(),
+                            source: "pip".into(),
+                            size_mb: size / 1_048_576.0,
+                        });
                     }
-
-                    packages.push(InstalledProgram {
-                        name: name.to_string(),
-                        version: version.to_string(),
-                        publisher: "PyPI (Python)".into(),
-                        install_location: path,
-                        uninstall_string: format!("python -m pip uninstall -y {}", name),
-                        registry_view: "pip".into(),
-                        icon_path: "".into(),
-                        source: "pip".into(),
-                        size_mb,
-                    });
                 }
             }
         }
@@ -108,12 +149,11 @@ fn scan_npm_packages() -> Vec<InstalledProgram> {
     let mut packages = Vec::new();
     let mut npm_root = String::new();
     
-    if let Ok(out) = Command::new("cmd").args(["/C", "npm", "root", "-g"]).output() {
+    if let Ok(out) = run_silent_cmd(&["npm", "root", "-g"]) {
         npm_root = String::from_utf8_lossy(&out.stdout).trim().to_string();
     }
 
-    let output = Command::new("cmd").args(["/C", "npm", "list", "-g", "--depth=0", "--json"]).output();
-    if let Ok(out) = output {
+    if let Ok(out) = run_silent_cmd(&["npm", "list", "-g", "--depth=0", "--json"]) {
         let json_str = String::from_utf8_lossy(&out.stdout);
         if let Ok(parsed) = serde_json::from_str::<Value>(&json_str) {
             if let Some(deps) = parsed["dependencies"].as_object() {
@@ -146,7 +186,7 @@ fn scan_npm_packages() -> Vec<InstalledProgram> {
 // --- CHOCOLATEY & SCOOP SCANNERS ---
 fn scan_choco_packages() -> Vec<InstalledProgram> {
     let mut packages = Vec::new();
-    if let Ok(out) = Command::new("cmd").args(["/C", "choco", "list", "--limit-output"]).output() {
+    if let Ok(out) = run_silent_cmd(&["choco", "list", "--limit-output"]) {
         if out.status.success() {
             let stdout = String::from_utf8_lossy(&out.stdout);
             for line in stdout.lines() {
@@ -172,7 +212,7 @@ fn scan_choco_packages() -> Vec<InstalledProgram> {
 
 fn scan_scoop_packages() -> Vec<InstalledProgram> {
     let mut packages = Vec::new();
-    if let Ok(out) = Command::new("cmd").args(["/C", "scoop", "list"]).output() {
+    if let Ok(out) = run_silent_cmd(&["scoop", "list"]) {
         if out.status.success() {
             let stdout = String::from_utf8_lossy(&out.stdout);
             for line in stdout.lines().skip(2) {
@@ -200,20 +240,36 @@ fn scan_scoop_packages() -> Vec<InstalledProgram> {
 #[tauri::command]
 pub fn uninstall_program(program: InstalledProgram) -> Result<String, String> {
     if program.source == "pip" {
-        let status = Command::new("cmd").args(["/C", "python", "-m", "pip", "uninstall", "-y", &program.name]).status()
-            .map_err(|e| e.to_string())?;
-        return if status.success() { Ok(format!("Uninstalled {}", program.name)) } else { Err("Pip uninstall failed".into()) };
+        // We saved the exact python path in install_location during the scan!
+        let python_exe = if program.install_location.is_empty() { "python" } else { &program.install_location };
+        
+        let mut cmd = Command::new(python_exe);
+        cmd.args(["-m", "pip", "uninstall", "-y", &program.name]);
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let status = cmd.status().map_err(|e| e.to_string())?;
+        return if status.success() { 
+            Ok(format!("Uninstalled {}", program.name)) 
+        } else { 
+            Err("Pip uninstall failed.".into()) 
+        };
     }
+    
+    let mut cmd = Command::new("cmd");
     if program.source == "npm" {
-        let status = Command::new("cmd").args(["/C", "npm", "uninstall", "-g", &program.name]).status().map_err(|e| e.to_string())?;
+        cmd.args(["/C", "npm", "uninstall", "-g", &program.name]);
+        let status = cmd.status().map_err(|e| e.to_string())?;
         return if status.success() { Ok(format!("Uninstalled {}", program.name)) } else { Err("NPM uninstall failed".into()) };
     }
     if program.source == "choco" {
-        let status = Command::new("cmd").args(["/C", "choco", "uninstall", "-y", &program.name]).status().map_err(|e| e.to_string())?;
+        cmd.args(["/C", "choco", "uninstall", "-y", &program.name]);
+        let status = cmd.status().map_err(|e| e.to_string())?;
         return if status.success() { Ok(format!("Uninstalled {}", program.name)) } else { Err("Choco uninstall failed".into()) };
     }
     if program.source == "scoop" {
-        let status = Command::new("cmd").args(["/C", "scoop", "uninstall", &program.name]).status().map_err(|e| e.to_string())?;
+        cmd.args(["/C", "scoop", "uninstall", &program.name]);
+        let status = cmd.status().map_err(|e| e.to_string())?;
         return if status.success() { Ok(format!("Uninstalled {}", program.name)) } else { Err("Scoop uninstall failed".into()) };
     }
 
@@ -227,12 +283,12 @@ pub fn uninstall_program(program: InstalledProgram) -> Result<String, String> {
 }
 
 fn is_winget_installed(name: &str) -> bool {
-    let output = Command::new("cmd").args(["/C", "winget", "list", "--name", name, "--accept-source-agreements"]).output();
+    let output = run_silent_cmd(&["winget", "list", "--name", name, "--accept-source-agreements"]);
     match output { Ok(o) => o.status.success(), Err(_) => false }
 }
 
 fn run_winget_uninstall(name: &str) -> Result<String, String> {
-    let output = Command::new("cmd").args(["/C", "winget", "uninstall", "--name", name, "--silent", "--accept-source-agreements", "--disable-interactivity"]).output().map_err(|e| format!("Failed to launch winget: {e}"))?;
+    let output = run_silent_cmd(&["winget", "uninstall", "--name", name, "--silent", "--accept-source-agreements", "--disable-interactivity"]).map_err(|e| format!("Failed to launch winget: {e}"))?;
     if output.status.success() { Ok(format!("Uninstalled {name} via winget.")) } else { Err(String::from_utf8_lossy(&output.stderr).to_string()) }
 }
 
