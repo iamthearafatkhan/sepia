@@ -3,7 +3,7 @@
   <h1>Sepia — Your software, curated.</h1>
   <p><strong>A beautifully crafted, ultra-lightweight uninstaller for Windows.</strong></p>
 
-  <a href="https://github.com/iamthearafatkhan/sepia/releases/tag/v1.0">
+  <a href="https://github.com/iamthearafatkhan/sepia/releases/tag/v1.1">
     <img src="https://img.shields.io/badge/Download-Sepia_v1.0-916B60?style=for-the-badge&logo=windows&logoColor=white" alt="Download Sepia" />
   </a>
   <a href="https://github.com/iamthearafatkhan/sepia/blob/main/LICENSE">
@@ -29,10 +29,21 @@ Built with **Tauri (Rust + React)**, Sepia is incredibly lightweight (under 10 M
 - 🖥️ **Portable `.exe`:** No installation required. Download the file, double-click, and it runs instantly.
 
 ---
+### ✨ New Features
+*   **Smart Cleaner Tab:** A brand new interface to scan and clean temporary files.
+*   **Deep Cache Cleaning:** Safely removes User Temp files, Windows Temp files, NPM Cache, and Pip (Python) Cache.
+*   **One-Click Cleanup:** See exactly how much space each category is taking up and wipe it instantly.
+*   **Tabbed Navigation:** Seamlessly switch between "Installed Software" and "Smart Cleaner".
+---
+### 🛠️ Improvements
+*   Updated versioning to `v1.1.0`.
+*   Further optimized background scanning so the UI never freezes, even when cleaning large caches.
+*   Maintained the ultra-premium Sepia color palette and smooth modal confirmations.
 
+---
 ## 🚀 How to Use
 
-1. Go to the **[Latest Releases](https://github.com/iamthearafatkhan/sepia/releases/tag/v1.0)** page.
+1. Go to the **[Latest Releases](https://github.com/iamthearafatkhan/sepia/releases/tag/v1.1)** page.
 2. Download `sepia.exe`.
 3. Double-click the `.exe` to open Sepia. 
 4. Use the search bar to find any software or package.
